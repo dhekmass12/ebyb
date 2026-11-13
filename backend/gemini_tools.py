@@ -1094,7 +1094,7 @@ def get_gemini_tool_declarations() -> List[Dict[str, Any]]:
                         "description": "Nama pemilik rekening bank pengirim (minimal 3 karakter non-spasi)."
                     }
                 },
-                "required": ["nominal_transfer", "invoice_no", "bank_tujuan", "nama_rekening_pengirim"]
+                "required": ["nominal_transfer"]
             }
         },
         {

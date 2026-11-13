@@ -23,6 +23,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 import database
+import billing
 import gemini_tools
 
 
@@ -126,29 +127,45 @@ def detect_intent_and_generate_response(client_id: str, message: str) -> tuple[s
             bank = tool_args.get("bank_tujuan") or extract_bank(message)
             sender = tool_args.get("nama_rekening_pengirim") or extract_sender_name(message)
 
-            if nominal is not None:
-                # Validasi nominal lewat confirm_payment
-                res = gemini_tools.confirm_payment(
-                    nominal_transfer=nominal,
-                    invoice_no=inv_no,
-                    bank_tujuan=bank,
-                    nama_rekening_pengirim=sender,
-                    client_id=client_id
+            # Validasi melalui PaymentConfirmationRequest di billing.py terlebih dahulu
+            try:
+                billing.PaymentConfirmationRequest(
+                    client_id=client_id,
+                    invoice_no=inv_no or "",
+                    nominal_transfer=nominal if nominal is not None else 0,
+                    bank_tujuan=bank or "",
+                    nama_rekening_pengirim=sender or ""
                 )
-                if nominal <= 0:
-                    return ("payment_validation_error", res.get("message", "Nominal transfer tidak valid."))
-                # TC-05: Konfirmasi pembayaran masuk antrean verifikasi tanpa manipulasi status database
-                return (
-                    "payment_confirmation",
-                    f"Konfirmasi pembayaran sejumlah Rp{nominal:,} telah kami terima dan masuk ke sistem antrean verifikasi. "
-                    "Tim finance kami akan segera melakukan pengecekan mutasi bank. Status tagihan akan diperbarui setelah verifikasi berhasil."
+            except Exception as exc:
+                # Jika salah satu parameter tidak ada atau tidak valid -> langsung keluarkan pesan fallback
+                fallback_msg = (
+                    "Mohon maaf kak, data konfirmasi pembayaran belum lengkap atau tidak valid. "
+                    "Silakan sertakan informasi lengkap berikut agar pembayaran dapat kami verifikasi:\n"
+                    "- Nomor invoice (format INV-YYYY-NNN)\n"
+                    "- Bank tujuan transfer (BCA, MANDIRI, atau BRI)\n"
+                    "- Nominal transfer (angka positif > 0)\n"
+                    "- Nama pemilik rekening pengirim (minimal 3 karakter)"
                 )
-            else:
-                return (
-                    "payment_confirmation_need_info",
-                    "Terima kasih atas konfirmasi pembayaran Anda. Mohon sertakan nominal transfer, nomor invoice, "
-                    "serta bank tujuan transfer (BCA/MANDIRI/BRI) agar pengajuan dapat diverifikasi oleh sistem."
-                )
+                return ("payment_confirmation_fallback", fallback_msg)
+
+            # Jika lolos validasi PaymentConfirmationRequest, proses konfirmasi pembayaran
+            res = gemini_tools.confirm_payment(
+                nominal_transfer=nominal,
+                invoice_no=inv_no,
+                bank_tujuan=bank,
+                nama_rekening_pengirim=sender,
+                client_id=client_id
+            )
+
+            if not res.get("success"):
+                return ("payment_validation_error", res.get("message", "Konfirmasi pembayaran gagal diverifikasi."))
+
+            # TC-05: Konfirmasi pembayaran valid masuk ke antrean verifikasi
+            return (
+                "payment_confirmation",
+                f"Konfirmasi pembayaran sejumlah Rp{nominal:,} untuk invoice {inv_no} telah kami terima dan masuk ke sistem antrean verifikasi. "
+                "Tim finance kami akan segera melakukan pengecekan mutasi bank. Status tagihan akan diperbarui setelah verifikasi berhasil."
+            )
 
         # 3. Tool 1: get_client_info (Profil Klien)
         elif tool_name == "get_client_info":
